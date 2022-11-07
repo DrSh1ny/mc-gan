@@ -16,7 +16,8 @@ from . import networks
 from scipy import misc
 import random
 
-
+from PIL import Image
+import torchvision.transforms as transforms
 
 class cGANModel(BaseModel):
     def name(self):
@@ -32,9 +33,7 @@ class cGANModel(BaseModel):
                                    opt.fineSize, opt.fineSize)
 
         # load/define networks
-        if self.opt.conv3d:
-            self.netG_3d = networks.define_G_3d(opt.input_nc, opt.input_nc, norm=opt.norm, groups=opt.grps, gpu_ids=self.gpu_ids)
-
+        self.netG_3d = networks.define_G_3d(opt.input_nc, opt.input_nc, norm=opt.norm, groups=opt.grps, gpu_ids=self.gpu_ids)
         self.netG = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf,
                                     opt.which_model_netG, opt.norm, opt.use_dropout, gpu_ids=self.gpu_ids)
         
@@ -42,29 +41,18 @@ class cGANModel(BaseModel):
             
         if self.isTrain:
             use_sigmoid = opt.no_lsgan
-            if self.opt.conditional:
-                if opt.which_model_preNet != 'none':
-                    self.preNet_A = networks.define_preNet(disc_ch+disc_ch, disc_ch+disc_ch, which_model_preNet=opt.which_model_preNet,norm=opt.norm, gpu_ids=self.gpu_ids)
-                nif = disc_ch+disc_ch
+            self.preNet_A = networks.define_preNet(disc_ch+disc_ch, disc_ch+disc_ch, which_model_preNet=opt.which_model_preNet,norm=opt.norm, gpu_ids=self.gpu_ids)
+            nif = disc_ch+disc_ch
+            netD_norm = opt.norm
+            self.netD = networks.define_D(nif, opt.ndf,
+                                            opt.which_model_netD,
+                                            opt.n_layers_D, netD_norm, use_sigmoid, gpu_ids=self.gpu_ids)
 
-                
-                netD_norm = opt.norm
-
-                self.netD = networks.define_D(nif, opt.ndf,
-                                             opt.which_model_netD,
-                                             opt.n_layers_D, netD_norm, use_sigmoid, gpu_ids=self.gpu_ids)
-
-            else:
-                self.netD = networks.define_D(disc_ch, opt.ndf,
-                                             opt.which_model_netD,
-                                             opt.n_layers_D, opt.norm, use_sigmoid, gpu_ids=self.gpu_ids)
         if not self.isTrain or opt.continue_train:
-            if self.opt.conv3d:
-                 self.load_network(self.netG_3d, 'G_3d', opt.which_epoch)
+            self.load_network(self.netG_3d, 'G_3d', opt.which_epoch)
             self.load_network(self.netG, 'G', opt.which_epoch)
             if self.isTrain:
-                if opt.which_model_preNet != 'none':
-                    self.load_network(self.preNet_A, 'PRE_A', opt.which_epoch)
+                self.load_network(self.preNet_A, 'PRE_A', opt.which_epoch)
                 self.load_network(self.netD, 'D', opt.which_epoch)
 
         if self.isTrain:
@@ -76,14 +64,11 @@ class cGANModel(BaseModel):
 
 
             # initialize optimizers
-            if self.opt.conv3d:
-                 self.optimizer_G_3d = torch.optim.Adam(self.netG_3d.parameters(),
+            self.optimizer_G_3d = torch.optim.Adam(self.netG_3d.parameters(),
                                                      lr=opt.lr, betas=(opt.beta1, 0.999))
-
             self.optimizer_G = torch.optim.Adam(self.netG.parameters(),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
-            if opt.which_model_preNet != 'none':
-                self.optimizer_preA = torch.optim.Adam(self.preNet_A.parameters(),
+            self.optimizer_preA = torch.optim.Adam(self.preNet_A.parameters(),
                                                     lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
@@ -97,6 +82,24 @@ class cGANModel(BaseModel):
             networks.print_network(self.netD)
             print('-----------------------------------------------')
 
+        image=Image.open("./datasets/Capitals64/BASE/Code New Roman.0.0.png")
+        image = image.convert("L")
+        image=np.asarray(image)
+        image=image.reshape((-1,64,1664))
+        image=image/255
+
+        image = torch.from_numpy(image)
+
+        transform = transforms.Compose([
+            transforms.Resize((64)),
+            transforms.Normalize(( 0.5),
+                                ( 0.5)),
+            
+            ])
+        img_tensor = transform(image)
+        img_tensor=torch.reshape(img_tensor,(1,26,64,64))        
+        self.base_font=img_tensor.to("cuda:0")
+
     def set_input(self, input):
         input_A = input['A']
         input_B = input['B']        
@@ -106,13 +109,10 @@ class cGANModel(BaseModel):
 
     def forward(self):
         self.real_A = Variable(self.input_A)
-        if self.opt.conv3d:
-            self.real_A_indep = self.netG_3d.forward(self.real_A.unsqueeze(2))
-            self.fake_B = self.netG.forward(self.real_A_indep.squeeze(2))
-        else:
-            self.fake_B = self.netG.forward(self.real_A)
-
-        
+    
+        self.real_A_indep = self.netG_3d.forward(self.real_A.unsqueeze(2))
+        self.fake_B = self.netG.forward(self.real_A_indep.squeeze(2))
+    
         self.real_B = Variable(self.input_B)
         real_B = util.tensor2im(self.real_B.data)
         real_A = util.tensor2im(self.real_A.data)
@@ -136,13 +136,9 @@ class cGANModel(BaseModel):
     # no backprop gradients
     def test(self):
         self.real_A = Variable(self.input_A, volatile=True)
-        if self.opt.conv3d:
-            self.real_A_indep = self.netG_3d.forward(self.real_A.unsqueeze(2))
-            self.fake_B = self.netG.forward(self.real_A_indep.squeeze(2))
-
-        else:
-            self.fake_B = self.netG.forward(self.real_A)
-            
+        self.real_A_indep = self.netG_3d.forward(self.real_A.unsqueeze(2))
+        self.fake_B = self.netG.forward(self.real_A_indep.squeeze(2))
+    
         self.real_B = Variable(self.input_B, volatile=True)
 
     #get image paths
@@ -162,39 +158,27 @@ class cGANModel(BaseModel):
         self.real_A_reshaped = self.real_A
         self.real_B_reshaped = self.real_B
 
-        if self.opt.conditional:
-
-
-            fake_AB = self.fake_AB_pool.query(torch.cat((self.real_A_reshaped, self.fake_B_reshaped), 1))
-            self.pred_fake_patch = self.netD.forward(fake_AB.detach())
-            self.loss_D_fake = self.criterionGAN(self.pred_fake_patch, label_fake)
-            if self.opt.which_model_preNet != 'none':
-                #transform the input
-                transformed_AB = self.preNet_A.forward(fake_AB.detach())
-                self.pred_fake = self.netD.forward(transformed_AB)
-                self.loss_D_fake += self.criterionGAN(self.pred_fake, label_fake)
+        
+        fake_AB = self.fake_AB_pool.query(torch.cat((self.real_A_reshaped, self.fake_B_reshaped), 1))
+        self.pred_fake_patch = self.netD.forward(fake_AB.detach())
+        self.loss_D_fake = self.criterionGAN(self.pred_fake_patch, label_fake)
+        #transform the input
+        transformed_AB = self.preNet_A.forward(fake_AB.detach())
+        self.pred_fake = self.netD.forward(transformed_AB)
+        self.loss_D_fake += self.criterionGAN(self.pred_fake, label_fake)
                             
-        else:
-            self.pred_fake = self.netD.forward(self.fake_B.detach())
-            self.loss_D_fake = self.criterionGAN(self.pred_fake, label_fake)
-
+       
         # Real
         label_real = self.add_noise_disc(True)
-        if self.opt.conditional:
-            real_AB = torch.cat((self.real_A_reshaped, self.real_B_reshaped), 1)#.detach()
-            self.pred_real_patch = self.netD.forward(real_AB)
-            self.loss_D_real = self.criterionGAN(self.pred_real_patch, label_real)
-
-            if self.opt.which_model_preNet != 'none':
-                #transform the input
-                transformed_A_real = self.preNet_A.forward(real_AB)
-                self.pred_real = self.netD.forward(transformed_A_real)
-                self.loss_D_real += self.criterionGAN(self.pred_real, label_real)
-                            
-        else:
-            self.pred_real = self.netD.forward(self.real_B)            
-            self.loss_D_real = self.criterionGAN(self.pred_real, label_real)
         
+        real_AB = torch.cat((self.real_A_reshaped, self.real_B_reshaped), 1)#.detach()
+        self.pred_real_patch = self.netD.forward(real_AB)
+        self.loss_D_real = self.criterionGAN(self.pred_real_patch, label_real)
+        #transform the input
+        transformed_A_real = self.preNet_A.forward(real_AB)
+        self.pred_real = self.netD.forward(transformed_A_real)
+        self.loss_D_real += self.criterionGAN(self.pred_real, label_real)
+                            
         # Combined loss
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
 
@@ -203,23 +187,25 @@ class cGANModel(BaseModel):
 
     def backward_G(self):
         # First, G(A) should fake the discriminator
-        if self.opt.conditional:
-            #PATCH GAN
-            fake_AB = (torch.cat((self.real_A_reshaped, self.fake_B_reshaped), 1))
-            pred_fake_patch = self.netD.forward(fake_AB)
-            self.loss_G_GAN = self.criterionGAN(pred_fake_patch, True)
-            if self.opt.which_model_preNet != 'none':
-                #global disc
-                transformed_A = self.preNet_A.forward(fake_AB)
-                pred_fake = self.netD.forward(transformed_A)
-                self.loss_G_GAN += self.criterionGAN(pred_fake, True)
-        
-        else:
-            pred_fake = self.netD.forward(self.fake_B)
-            self.loss_G_GAN = self.criterionGAN(pred_fake, True)
+        #PATCH GAN
+        fake_AB = (torch.cat((self.real_A_reshaped, self.fake_B_reshaped), 1))
+        pred_fake_patch = self.netD.forward(fake_AB)
+        self.loss_G_GAN = self.criterionGAN(pred_fake_patch, True)
+        #global disc
+        transformed_A = self.preNet_A.forward(fake_AB)
+        pred_fake = self.netD.forward(transformed_A)
+        self.loss_G_GAN += self.criterionGAN(pred_fake, True)
+ 
 
-        self.loss_G_L1 = self.criterionL1(self.fake_B, self.real_B) * self.opt.lambda_A
+        #self.loss_G_L1 = self.criterionL1(self.fake_B, self.real_B) * (self.opt.lambda_A / 100)
+        img_tensor=torch.tile(self.base_font,(self.fake_B.size(dim=0),1,1,1))
+        aux=torch.abs(torch.sub(self.real_B,img_tensor))
+        aux1=torch.abs(torch.sub(self.fake_B,self.real_B))
+        aux2=torch.mul(aux,aux1)
+        self.loss_G_L1 = torch.mean(aux2)* (self.opt.lambda_A / 100)
+
         self.loss_G = self.loss_G_GAN + self.loss_G_L1
+        
 
         self.loss_G.backward()
 
@@ -227,22 +213,21 @@ class cGANModel(BaseModel):
         self.forward()
 
         self.optimizer_D.zero_grad()
-        if self.opt.which_model_preNet != 'none':
-            self.optimizer_preA.zero_grad()
+        self.optimizer_preA.zero_grad()
+
         self.backward_D()
+
         self.optimizer_D.step()
-        if self.opt.which_model_preNet != 'none':
-            self.optimizer_preA.step()
+        self.optimizer_preA.step()
 
 
         self.optimizer_G.zero_grad()
-        if self.opt.conv3d:
-            self.optimizer_G_3d.zero_grad()
+        self.optimizer_G_3d.zero_grad()
 
         self.backward_G()
+
         self.optimizer_G.step()
-        if self.opt.conv3d:
-            self.optimizer_G_3d.step()
+        self.optimizer_G_3d.step()
         
     
 
@@ -261,12 +246,10 @@ class cGANModel(BaseModel):
         return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('real_B', real_B)])
 
     def save(self, label):
-        if self.opt.conv3d:
-             self.save_network(self.netG_3d, 'G_3d', label, gpu_ids=self.gpu_ids)
+        self.save_network(self.netG_3d, 'G_3d', label, gpu_ids=self.gpu_ids)
         self.save_network(self.netG, 'G', label, gpu_ids=self.gpu_ids)
         self.save_network(self.netD, 'D', label, gpu_ids=self.gpu_ids)
-        if self.opt.which_model_preNet != 'none':
-            self.save_network(self.preNet_A, 'PRE_A', label, gpu_ids=self.gpu_ids)
+        self.save_network(self.preNet_A, 'PRE_A', label, gpu_ids=self.gpu_ids)
             
 
     def update_learning_rate(self):
@@ -274,13 +257,13 @@ class cGANModel(BaseModel):
         lr = self.old_lr - lrd
         for param_group in self.optimizer_D.param_groups:
             param_group['lr'] = lr
-        if self.opt.which_model_preNet != 'none':
-            for param_group in self.optimizer_preA.param_groups:
-                param_group['lr'] = lr
+        
+        for param_group in self.optimizer_preA.param_groups:
+            param_group['lr'] = lr
         for param_group in self.optimizer_G.param_groups:
             param_group['lr'] = lr
-        if self.opt.conv3d:
-            for param_group in self.optimizer_G_3d.param_groups:
-                param_group['lr'] = lr
+        
+        for param_group in self.optimizer_G_3d.param_groups:
+            param_group['lr'] = lr
         print('update learning rate: %f -> %f' % (self.old_lr, lr))
         self.old_lr = lr

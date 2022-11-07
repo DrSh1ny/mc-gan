@@ -12,8 +12,7 @@ from . import html
 import shutil
 from scipy import misc
 from skimage import data, img_as_float
-from skimage.measure import compare_ssim as ssim
-import skvideo.io
+from skimage.metrics import structural_similarity as ssim
 
 
 
@@ -54,9 +53,9 @@ class Visualizer():
         if self.display_id > 0: # show images in the browser
             idx = 1
             for label, image_numpy in visuals.items():
-                #image_numpy = np.flipud(image_numpy)
-                self.vis.image(image_numpy.transpose([2,0,1]), opts=dict(title=label),
-                                   win=self.display_id + idx)
+                image_numpy = np.flipud(image_numpy)
+                print(image_numpy)
+                self.vis.image(image_numpy, opts=dict(title=label), win=self.display_id + idx)
                 idx += 1
 
         if self.use_html: # save images to a html file
